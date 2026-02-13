@@ -18,9 +18,10 @@ from app.db import (
     mark_article_read, mark_article_unread, get_read_article_ids,
     get_user_refresh_timestamps, get_stale_tickers,
 )
-from app.services.news import refresh_all_stocks, refresh_stock, refresh_user_stocks
+from app.services.news import refresh_all_stocks, refresh_stock, refresh_user_stocks, refresh_stock_with_polygon
 from app.services.events import refresh_events_for_user, refresh_all_events, get_user_events, refresh_events_for_ticker
 from app.sources.polygon_tickers import fetch_all_us_tickers
+from app.sources.massive import fetch_news_batch, RateLimitError
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -356,6 +357,62 @@ async def api_refresh_user(username: str):
     return JSONResponse(response)
 
 
+# --- Streaming refresh endpoints (SSE) ---
+# NOTE: These must be registered BEFORE the /{ticker} catch-all route
+# so that "/stream" is matched literally instead of as a ticker name.
+
+@app.post("/api/refresh/{username}/stream")
+async def api_refresh_user_stream(username: str):
+    """Stream progress updates as news is refreshed for each ticker.
+
+    Phase 1: Single batch Polygon.io call for all stale tickers.
+    Phase 2: Per-ticker Yahoo RSS + merge + cache with progress updates.
+    """
+    async def generate():
+        all_tickers = get_user_tickers(username)
+        stale = get_stale_tickers(username, stale_minutes=5, log_table="refresh_log")
+        stale_set = set(stale)
+        skipped = [t for t in all_tickers if t not in stale_set]
+
+        yield f"data: {json.dumps({'type': 'init', 'queue': stale, 'skipped': skipped})}\n\n"
+
+        if not stale:
+            yield f"data: {json.dumps({'type': 'complete', 'errors': []})}\n\n"
+            return
+
+        # Phase 1: Batch fetch from Polygon.io (single API call for all tickers)
+        yield f"data: {json.dumps({'type': 'batch_start', 'source': 'Polygon.io', 'count': len(stale)})}\n\n"
+        polygon_batch: dict[str, list] = {}
+        polygon_ok = False
+        all_errors: list[str] = []
+        try:
+            polygon_batch = await fetch_news_batch(stale)
+            polygon_ok = True
+        except RateLimitError:
+            all_errors.append("Polygon.io rate limited (batch)")
+        except Exception as e:
+            all_errors.append(f"Polygon.io batch error: {str(e)[:120]}")
+
+        yield f"data: {json.dumps({'type': 'batch_done', 'success': polygon_ok})}\n\n"
+
+        # Phase 2: Per-ticker Yahoo RSS + merge + cache
+        for ticker in stale:
+            yield f"data: {json.dumps({'type': 'processing', 'ticker': ticker})}\n\n"
+            count, errors = await refresh_stock_with_polygon(
+                ticker, polygon_batch.get(ticker, []), polygon_ok
+            )
+            all_errors.extend(errors)
+            yield f"data: {json.dumps({'type': 'ticker_done', 'ticker': ticker, 'count': count, 'errors': errors})}\n\n"
+
+        yield f"data: {json.dumps({'type': 'complete', 'errors': all_errors})}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @app.post("/api/refresh/{username}/{ticker}")
 async def api_refresh_ticker(username: str, ticker: str):
     ticker = ticker.upper()
@@ -372,35 +429,6 @@ async def api_refresh_ticker(username: str, ticker: str):
     if errors:
         response["errors"] = errors
     return JSONResponse(response)
-
-
-# --- Streaming refresh endpoints (SSE) ---
-
-@app.post("/api/refresh/{username}/stream")
-async def api_refresh_user_stream(username: str):
-    """Stream progress updates as news is refreshed for each ticker."""
-    async def generate():
-        all_tickers = get_user_tickers(username)
-        stale = get_stale_tickers(username, stale_minutes=5, log_table="refresh_log")
-        stale_set = set(stale)
-        skipped = [t for t in all_tickers if t not in stale_set]
-
-        yield f"data: {json.dumps({'type': 'init', 'queue': stale, 'skipped': skipped})}\n\n"
-
-        all_errors: list[str] = []
-        for ticker in stale:
-            yield f"data: {json.dumps({'type': 'processing', 'ticker': ticker})}\n\n"
-            count, errors = await refresh_stock(ticker)
-            all_errors.extend(errors)
-            yield f"data: {json.dumps({'type': 'ticker_done', 'ticker': ticker, 'count': count, 'errors': errors})}\n\n"
-
-        yield f"data: {json.dumps({'type': 'complete', 'errors': all_errors})}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
 
 
 @app.post("/api/events/refresh/{username}/stream")

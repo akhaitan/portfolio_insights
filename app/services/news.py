@@ -98,12 +98,70 @@ async def refresh_stock(ticker: str) -> tuple[int, list[str]]:
     return len(articles), errors
 
 
+async def refresh_stock_with_polygon(
+    ticker: str,
+    polygon_articles: list[dict],
+    polygon_ok: bool,
+) -> tuple[int, list[str]]:
+    """Refresh a ticker using pre-fetched Polygon articles + Yahoo RSS.
+
+    Used after a batch Polygon.io call so each ticker only needs Yahoo RSS.
+    ``polygon_ok`` indicates whether the batch call succeeded — if False, all
+    sources are treated as failed and cached data is preserved.
+    """
+    errors: list[str] = []
+    any_source_ok = polygon_ok
+    yahoo_articles: list[dict] = []
+
+    try:
+        yahoo_articles = await yahoo_rss.fetch_news(ticker)
+        any_source_ok = True
+    except Exception as e:
+        errors.append(f"Yahoo Finance error for {ticker}: {_short_error(e)}")
+
+    # Merge (polygon first, then unique yahoo)
+    articles = polygon_articles[:]
+    existing_urls = {a["url"] for a in articles}
+    for a in yahoo_articles:
+        if a["url"] not in existing_urls:
+            articles.append(a)
+
+    company_name = get_stock_name(ticker)
+    articles = [a for a in articles if _is_relevant(a, ticker, company_name)]
+
+    if any_source_ok:
+        delete_articles_for_ticker(ticker)
+        if articles:
+            upsert_articles(articles)
+        update_refresh_log(ticker)
+    else:
+        logger.warning(f"All news sources failed for {ticker}, keeping cached data")
+
+    return len(articles), errors
+
+
 async def refresh_all_stocks() -> tuple[dict[str, int], list[str]]:
     tickers = get_all_watched_tickers()
-    results = {}
+    if not tickers:
+        return {}, []
+
+    # Batch fetch from Polygon.io
+    polygon_batch: dict[str, list] = {}
+    polygon_ok = False
     all_errors: list[str] = []
+    try:
+        polygon_batch = await massive.fetch_news_batch(tickers)
+        polygon_ok = True
+    except RateLimitError:
+        all_errors.append("Polygon.io rate limited (batch)")
+    except Exception as e:
+        all_errors.append(f"Polygon.io batch error: {str(e)[:120]}")
+
+    results = {}
     for ticker in tickers:
-        count, errors = await refresh_stock(ticker)
+        count, errors = await refresh_stock_with_polygon(
+            ticker, polygon_batch.get(ticker, []), polygon_ok
+        )
         results[ticker] = count
         all_errors.extend(errors)
 
@@ -115,7 +173,7 @@ async def refresh_user_stocks(
     username: str,
     stale_minutes: int | None = None,
 ) -> tuple[dict[str, int], list[str], int]:
-    """Refresh news for a user's watchlist.
+    """Refresh news for a user's watchlist using batched Polygon.io call.
 
     If stale_minutes is set, only tickers whose last news refresh is older
     than that threshold (or never refreshed) are fetched.
@@ -129,10 +187,28 @@ async def refresh_user_stocks(
     else:
         tickers = get_user_tickers(username)
         skipped = 0
-    results = {}
+
+    if not tickers:
+        return {}, [], skipped
+
+    # Batch fetch from Polygon.io (single API call)
+    polygon_batch: dict[str, list] = {}
+    polygon_ok = False
     all_errors: list[str] = []
+    try:
+        polygon_batch = await massive.fetch_news_batch(tickers)
+        polygon_ok = True
+    except RateLimitError:
+        all_errors.append("Polygon.io rate limited (batch)")
+    except Exception as e:
+        all_errors.append(f"Polygon.io batch error: {str(e)[:120]}")
+
+    # Per-ticker: Yahoo RSS + merge + cache
+    results = {}
     for ticker in tickers:
-        count, errors = await refresh_stock(ticker)
+        count, errors = await refresh_stock_with_polygon(
+            ticker, polygon_batch.get(ticker, []), polygon_ok
+        )
         results[ticker] = count
         all_errors.extend(errors)
     return results, all_errors, skipped
