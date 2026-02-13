@@ -1,6 +1,7 @@
 import httpx
 from datetime import datetime, timedelta, timezone
 from app.config import MASSIVE_API_KEY, MASSIVE_BASE_URL
+from app.sources.polygon_rate_limiter import limiter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ async def fetch_news(ticker: str, days: int = 1) -> list[dict]:
     }
 
     try:
+        await limiter.acquire()
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(url, params=params)
 
@@ -61,8 +63,8 @@ async def fetch_news(ticker: str, days: int = 1) -> list[dict]:
     except RateLimitError:
         raise
     except Exception as e:
-        logger.error(f"Massive fetch failed for {ticker}: {e}")
-        return []
+        logger.error(f"Polygon.io news fetch failed for {ticker}: {e}")
+        raise
 
 
 class RateLimitError(Exception):

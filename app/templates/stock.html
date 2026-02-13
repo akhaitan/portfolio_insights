@@ -36,7 +36,7 @@
                     <span>{{ article.source }}</span>
                     {% if article.published_at %}
                     <span>&middot;</span>
-                    <span>{{ article.published_at[:16] }}</span>
+                    <span class="local-time" data-utc="{{ article.published_at }}">{{ article.published_at[:16] }}</span>
                     {% endif %}
                 </div>
             </div>
@@ -84,5 +84,28 @@ async function refreshTicker(ticker) {
         icon.classList.remove('animate-spin');
     }
 }
+
+// --- Timezone-aware timestamp formatting ---
+(function() {
+    let tz;
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) {}
+    if (!tz) tz = 'America/New_York';
+
+    const fmt = new Intl.DateTimeFormat(undefined, {
+        timeZone: tz,
+        month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+        hour12: true,
+    });
+
+    document.querySelectorAll('.local-time').forEach(el => {
+        const raw = el.dataset.utc;
+        if (!raw) return;
+        try {
+            const d = new Date(raw.endsWith('Z') || raw.includes('+') ? raw : raw + 'Z');
+            if (!isNaN(d)) el.textContent = fmt.format(d);
+        } catch(e) {}
+    });
+})();
 </script>
 {% endblock %}

@@ -43,4 +43,4 @@ async def fetch_news(ticker: str) -> list[dict]:
 
     except Exception as e:
         logger.error(f"Yahoo RSS fetch failed for {ticker}: {e}")
-        return []
+        raise

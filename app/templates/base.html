@@ -12,7 +12,15 @@
             <a href="{% if username is defined and username %}/{{ username }}{% else %}/{% endif %}" class="text-xl font-bold text-indigo-600">Stock News Digest</a>
             <div class="flex items-center gap-4">
                 {% if username is defined and username %}
-                <span class="text-sm text-gray-600">{{ username }}</span>
+                <a href="/{{ username }}" class="text-sm text-gray-600 hover:text-indigo-600 transition">Dashboard</a>
+                <a href="/{{ username }}/calendar" class="text-sm text-gray-600 hover:text-indigo-600 transition flex items-center gap-1">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"/>
+                    </svg>
+                    Calendar
+                </a>
+                <span class="text-gray-300">|</span>
+                <span class="text-sm text-gray-500">{{ username }}</span>
                 <a href="/" class="text-sm text-gray-400 hover:text-gray-600">Switch user</a>
                 {% else %}
                 <span class="text-sm text-gray-500">Cached news for tracked stocks</span>
