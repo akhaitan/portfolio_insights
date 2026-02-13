@@ -1,0 +1,137 @@
+{% extends "base.html" %}
+{% block title %}{{ username }}'s Dashboard — Stock News Digest{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <h1 class="text-2xl font-bold">{{ username }}'s Dashboard</h1>
+    <button id="refresh-btn" onclick="refreshAll()"
+        class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2">
+        <svg id="refresh-icon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        </svg>
+        <span id="refresh-text">Refresh All</span>
+    </button>
+</div>
+
+<div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 mb-6">
+    <form action="/{{ username }}/add" method="post" class="flex gap-3 items-end">
+        <div class="flex-1">
+            <label for="ticker" class="block text-sm font-medium text-gray-700 mb-1">Add stock to watchlist</label>
+            <input type="text" id="ticker" name="ticker" required
+                   class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                   placeholder="e.g. AAPL" list="stock-suggestions">
+            <datalist id="stock-suggestions">
+                {% for ticker, name in default_stocks.items() %}
+                <option value="{{ ticker }}">{{ name }}</option>
+                {% endfor %}
+            </datalist>
+        </div>
+        <button type="submit"
+                class="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition">
+            Add
+        </button>
+    </form>
+</div>
+
+{% if stocks %}
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    {% for stock in stocks %}
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4 hover:shadow-md transition relative group">
+        <form action="/{{ username }}/remove/{{ stock.ticker }}" method="post" class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition">
+            <button type="submit" class="text-gray-400 hover:text-red-500 p-1" title="Remove from watchlist">
+                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                </svg>
+            </button>
+        </form>
+        <a href="/{{ username }}/stock/{{ stock.ticker }}" class="block">
+            <div class="flex items-center justify-between mb-2">
+                <span class="text-lg font-semibold">{{ stock.ticker }}</span>
+                <span class="text-sm text-gray-500">{{ stock.name }}</span>
+            </div>
+            <div class="text-sm text-gray-600 mb-2">
+                {{ stock.article_count }} article{{ 's' if stock.article_count != 1 else '' }} (24h)
+            </div>
+            {% if stock.article_count > 0 %}
+            <div class="flex gap-2 text-xs">
+                {% if stock.positive %}
+                <span class="bg-green-100 text-green-700 px-2 py-0.5 rounded-full">+{{ stock.positive }}</span>
+                {% endif %}
+                {% if stock.negative %}
+                <span class="bg-red-100 text-red-700 px-2 py-0.5 rounded-full">-{{ stock.negative }}</span>
+                {% endif %}
+                {% if stock.neutral %}
+                <span class="bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">~{{ stock.neutral }}</span>
+                {% endif %}
+            </div>
+            {% endif %}
+        </a>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="text-center py-12 text-gray-500">
+    <p class="text-lg">Your watchlist is empty.</p>
+    <p class="mt-2">Add a stock ticker above to get started.</p>
+</div>
+{% endif %}
+
+{% if articles %}
+<h2 class="text-xl font-bold mt-10 mb-4">Latest News</h2>
+<div class="space-y-4">
+    {% for article in articles %}
+    <div class="bg-white rounded-lg shadow-sm border border-gray-200 p-4">
+        <div class="flex items-start justify-between gap-4">
+            <div class="flex-1">
+                <a href="{{ article.url }}" target="_blank" rel="noopener"
+                   class="text-lg font-medium text-indigo-600 hover:underline">
+                    {{ article.title }}
+                </a>
+                <div class="flex items-center gap-2 mt-1 text-sm text-gray-500">
+                    <span class="font-medium text-gray-700">{{ article.ticker }}</span>
+                    <span>&middot;</span>
+                    <span>{{ article.source }}</span>
+                    {% if article.published_at %}
+                    <span>&middot;</span>
+                    <span>{{ article.published_at[:16] }}</span>
+                    {% endif %}
+                </div>
+            </div>
+            {% if article.sentiment %}
+            <span class="shrink-0 px-2 py-1 rounded-full text-xs font-medium
+                {% if article.sentiment == 'positive' %}bg-green-100 text-green-700
+                {% elif article.sentiment == 'negative' %}bg-red-100 text-red-700
+                {% else %}bg-gray-100 text-gray-600{% endif %}">
+                {{ article.sentiment }}
+            </span>
+            {% endif %}
+        </div>
+        {% if article.summary %}
+        <p class="mt-2 text-sm text-gray-700 line-clamp-3">{{ article.summary }}</p>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function refreshAll() {
+    const btn = document.getElementById('refresh-btn');
+    const text = document.getElementById('refresh-text');
+    const icon = document.getElementById('refresh-icon');
+    btn.disabled = true;
+    text.textContent = 'Refreshing...';
+    icon.classList.add('animate-spin');
+    try {
+        await fetch('/api/refresh/{{ username }}', { method: 'POST' });
+        location.reload();
+    } catch (e) {
+        text.textContent = 'Error — retry';
+        btn.disabled = false;
+        icon.classList.remove('animate-spin');
+    }
+}
+</script>
+{% endblock %}
